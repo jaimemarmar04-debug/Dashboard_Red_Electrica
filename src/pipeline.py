@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 
 import pandas as pd
 
@@ -10,13 +11,16 @@ from src import database as db
 from src import model, ree_client, synthetic
 
 log = logging.getLogger("pipeline")
+_lock = threading.Lock()   # evita que el arranque y el planificador se solapen
 
 
 def update_data() -> str:
     """Descarga lo que falte desde el último dato (con solape de 2 días para
     recoger correcciones) y lo guarda. Devuelve la fuente usada."""
     now = pd.Timestamp.now(tz="UTC")
-    last = db.last_timestamp()
+    # Se parte del último dato REAL: si hubo horas simuladas, se vuelven a pedir a REE
+    # para sustituirlas en cuanto la API responda.
+    last = db.last_timestamp(source="REE")
     start = (last - pd.Timedelta(days=2)) if last is not None else now - pd.Timedelta(days=config.HISTORY_DAYS)
     end = now.normalize() + pd.Timedelta(days=2)  # REE publica el día siguiente por la tarde
     try:
@@ -30,7 +34,10 @@ def update_data() -> str:
             raise
         log.warning("API REE no disponible (%s). Usando datos simulados.", exc)
         # En modo simulado solo existen datos hasta la hora actual (como en tiempo real)
-        df = synthetic.generate(start, now.floor("h"))
+        # Solo se rellenan horas posteriores al último dato guardado (real o simulado)
+        last_any = db.last_timestamp()
+        sim_start = last_any + pd.Timedelta(hours=1) if last_any is not None else start
+        df = synthetic.generate(sim_start, now.floor("h")) if sim_start <= now else pd.DataFrame()
         source = "simulado"
     n = db.upsert_prices(df, source)
     db.log_ingest(source, n, "ok")
@@ -49,9 +56,22 @@ def retrain_if_needed(force: bool = False):
 
 
 def run_cycle(force_retrain: bool = False):
-    update_data()
-    retrain_if_needed(force_retrain)
-    model.forecast()
+    """Ciclo completo. Si la ingesta falla, se sigue con los datos ya guardados."""
+    if not _lock.acquire(blocking=False):
+        log.info("Ciclo ya en curso, se omite.")
+        return
+    try:
+        try:
+            update_data()
+        except Exception:  # noqa: BLE001
+            log.exception("Fallo en la ingesta; se continúa con los datos guardados.")
+        if db.last_timestamp() is None:
+            log.error("No hay datos: no se puede entrenar ni predecir.")
+            return
+        retrain_if_needed(force_retrain)
+        model.forecast()
+    finally:
+        _lock.release()
 
 
 if __name__ == "__main__":

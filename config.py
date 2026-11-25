@@ -1,4 +1,5 @@
 """Configuración central del proyecto."""
+import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -12,7 +13,9 @@ REE_TIMEOUT = 20
 
 # Si la API no responde (sin red, mantenimiento...) se usa un generador sintético
 # con la misma forma de datos para poder seguir desarrollando y demostrando.
-ALLOW_SYNTHETIC_FALLBACK = True
+# Solo rellena horas que falten: nunca sobrescribe datos reales de REE.
+# Se desactiva con la variable de entorno ALLOW_SYNTHETIC_FALLBACK=0.
+ALLOW_SYNTHETIC_FALLBACK = os.getenv("ALLOW_SYNTHETIC_FALLBACK", "1") == "1"
 
 HISTORY_DAYS = 400           # histórico que se descarga la primera vez
 FORECAST_HORIZON_H = 48      # horas que predice el modelo
@@ -31,3 +34,7 @@ APPLIANCES = {
     "Coche eléctrico": {"hours": 5, "kw": 7.4},
     "Termo eléctrico": {"hours": 3, "kw": 1.5},
 }
+
+# Servidor (Render inyecta PORT)
+HOST = os.getenv("HOST", "0.0.0.0")
+PORT = int(os.getenv("PORT", "8050"))

@@ -7,6 +7,8 @@ que predice las próximas 48 horas y ayuda a decidir a qué hora poner cada elec
 Asignatura: Desarrollo de Aplicaciones para la Visualización de Datos (ICAI).
 Autor: Jaime Martínez.
 
+**Aplicación desplegada:** https://cuando-enchufar.onrender.com  <!-- sustituir por la URL real de Render -->
+
 ## Puesta en marcha
 
 ```bash
@@ -15,18 +17,48 @@ pip install -r requirements.txt
 python app.py                                         # http://127.0.0.1:8050
 ```
 
-La primera ejecución descarga unos 400 días de histórico y entrena el modelo (menos de un minuto).
+La primera ejecución descarga unos 400 días de histórico y entrena el modelo en segundo plano
+(menos de un minuto); mientras tanto el dashboard muestra "Cargando datos…".
 A partir de ahí, mientras la app esté abierta, cada 15 minutos se consulta la API, se guardan los
 datos nuevos, se reentrena el modelo si tiene más de 24 h y se recalcula la previsión. El dashboard
 se refresca solo cada minuto.
 
 Para ejecutar el ciclo de datos sin interfaz (por ejemplo, desde cron): `python -m src.pipeline`.
 
+## Despliegue en Render
+
+El repositorio incluye `render.yaml` (Blueprint) y `Procfile`. En Render: *New > Blueprint*, elegir el
+repositorio y desplegar. Equivale a un *Web Service* con:
+
+- Build command: `pip install -r requirements.txt`
+- Start command: `gunicorn app:server --workers 1 --threads 4 --timeout 120 --bind 0.0.0.0:$PORT`
+
+Se usa **un solo worker** porque el planificador de ingesta vive dentro del proceso web (con varios
+workers se duplicaría). La ingesta y el entrenamiento arrancan al importar `app.py`, así que funcionan
+igual con `python app.py` que con gunicorn. En el plan gratuito el disco no es persistente y el
+servicio se duerme tras 15 minutos sin visitas: al despertar vuelve a descargar el histórico y a
+entrenar automáticamente.
+
+Variables de entorno opcionales: `PORT`, `HOST`, `ALLOW_SYNTHETIC_FALLBACK` (`1`/`0`) y
+`DISABLE_SCHEDULER=1` (no lanza la ingesta, útil para tests).
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest -q
+```
+
+Comprueban que no hay fuga de información en las variables, que el horizonte de 48 h está completo,
+el cálculo de la mejor franja y que los datos simulados nunca sobrescriben datos reales.
+
 ## Modo simulado
 
 Si la API no responde (sin conexión, mantenimiento, bloqueo de red), la app usa un generador sintético
 con la misma estructura y rasgos del mercado español y lo indica en la cabecera con un punto ámbar.
-Se desactiva poniendo `ALLOW_SYNTHETIC_FALLBACK = False` en `config.py`. Para empezar de cero con
+Los datos simulados solo rellenan las horas que falten: nunca sobrescriben datos reales, y en cuanto
+la API vuelve a responder se sustituyen por los oficiales. Se desactiva con la variable de entorno
+`ALLOW_SYNTHETIC_FALLBACK=0`. Para empezar de cero con
 datos reales, borra la carpeta `data/`.
 
 ## Estructura
@@ -41,6 +73,8 @@ src/features.py      variables de calendario, retardos y medias móviles
 src/model.py         entrenamiento, validación, calibración e inferencia
 src/pipeline.py      ingesta, reentrenamiento y predicción
 assets/style.css     estilos
+tests/               tests con pytest
+render.yaml, Procfile  despliegue en Render (gunicorn)
 ```
 
 ## Modelo

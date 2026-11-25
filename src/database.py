@@ -53,17 +53,22 @@ def _to_df(con, query, params=()):
 
 
 def upsert_prices(df: pd.DataFrame, source: str) -> int:
+    """Guarda precios. Los datos reales sobrescriben cualquier fila (incluidas las
+    simuladas); los simulados solo rellenan horas vacías y nunca pisan datos reales."""
     if df.empty:
         return 0
     now = pd.Timestamp.now(tz="UTC").isoformat()
     rows = [(ts.isoformat(), _f(r.get("pvpc")), _f(r.get("spot")), source, now)
             for ts, r in df.iterrows()]
+    if source == "simulado":
+        sql = "INSERT INTO prices VALUES (?,?,?,?,?) ON CONFLICT(datetime) DO NOTHING"
+    else:
+        sql = ("INSERT INTO prices VALUES (?,?,?,?,?) ON CONFLICT(datetime) DO UPDATE SET "
+               "pvpc=excluded.pvpc, spot=excluded.spot, source=excluded.source, "
+               "ingested_at=excluded.ingested_at")
     with connect() as con:
-        con.executemany(
-            "INSERT INTO prices VALUES (?,?,?,?,?) ON CONFLICT(datetime) DO UPDATE SET "
-            "pvpc=excluded.pvpc, spot=excluded.spot, source=excluded.source, "
-            "ingested_at=excluded.ingested_at", rows)
-    return len(rows)
+        cur = con.executemany(sql, rows)
+        return cur.rowcount if cur.rowcount >= 0 else len(rows)
 
 
 def read_prices(since: pd.Timestamp | None = None) -> pd.DataFrame:
@@ -75,9 +80,13 @@ def read_prices(since: pd.Timestamp | None = None) -> pd.DataFrame:
         return _to_df(con, q + " ORDER BY datetime", params)
 
 
-def last_timestamp() -> pd.Timestamp | None:
+def last_timestamp(source: str | None = None) -> pd.Timestamp | None:
+    q, params = "SELECT MAX(datetime) FROM prices WHERE pvpc IS NOT NULL", ()
+    if source is not None:
+        q += " AND source = ?"
+        params = (source,)
     with connect() as con:
-        r = con.execute("SELECT MAX(datetime) FROM prices WHERE pvpc IS NOT NULL").fetchone()[0]
+        r = con.execute(q, params).fetchone()[0]
     return pd.Timestamp(r) if r else None
 
 

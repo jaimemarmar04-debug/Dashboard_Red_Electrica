@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 
 import numpy as np
@@ -82,6 +83,7 @@ def best_window(outlook: pd.DataFrame, hours: int, kw: float):
 app = Dash(__name__, title="Cuándo enchufar", external_stylesheets=[
     "https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800"
     "&family=Source+Sans+3:wght@400;600&display=swap"])
+server = app.server   # servidor Flask que usa gunicorn en producción (gunicorn app:server)
 
 app.layout = html.Div(className="wrap", children=[
     dcc.Interval(id="tick", interval=config.UI_REFRESH_SECONDS * 1000),
@@ -199,6 +201,7 @@ def render_hero(_):
 @app.callback(Output("g-history", "figure"), Input("tick", "n_intervals"), Input("range", "value"))
 def render_history(_, days):
     now, prices, fc, _ = load_state()
+    days = days or 7
     hist = prices.loc[prices.index >= now - pd.Timedelta(days=days)]
     fc = fc.loc[fc.index > hist.index.max()] if not hist.empty else fc
     fig = go.Figure()
@@ -226,7 +229,8 @@ def appliance_defaults(name):
 @app.callback(Output("plan-out", "children"), Output("g-plan", "figure"),
               Input("hours", "value"), Input("kw", "value"), Input("tick", "n_intervals"))
 def render_plan(hours, kw, _):
-    hours, kw = int(hours or 1), float(kw or 1)
+    hours = min(max(int(hours or 1), 1), 12)
+    kw = min(max(float(kw or 1), 0.1), 22.0)
     _, _, _, outlook = load_state()
     bw = best_window(outlook, hours, kw)
     fig = go.Figure()
@@ -257,6 +261,8 @@ def render_plan(hours, kw, _):
 @app.callback(Output("g-heat", "figure"), Input("tick", "n_intervals"))
 def render_heat(_):
     _, prices, _, _ = load_state()
+    if prices.empty:
+        return base_layout(go.Figure(), 300)
     local = prices.tz_convert(TZ)
     pv = local.assign(h=local.index.hour, d=local.index.dayofweek) \
         .pivot_table(index="d", columns="h", values="pvpc", aggfunc="mean")
@@ -306,18 +312,26 @@ def render_model(_):
 
 
 # ---------- arranque ----------
-def start_scheduler():
+_started = False
+
+
+def start_background():
+    """Arranca una sola vez por proceso: un primer ciclo en segundo plano (la web
+    responde enseguida y muestra "Cargando datos…") y el planificador periódico.
+    Se ejecuta al importar el módulo para que funcione igual con gunicorn."""
+    global _started
+    if _started or os.getenv("DISABLE_SCHEDULER") == "1":
+        return
+    _started = True
+    threading.Thread(target=pipeline.run_cycle,
+                     kwargs={"force_retrain": db.latest_run() is None}, daemon=True).start()
     sched = BackgroundScheduler(timezone=TZ)
     sched.add_job(pipeline.run_cycle, "interval", minutes=config.UPDATE_EVERY_MIN,
                   id="cycle", max_instances=1, coalesce=True)
     sched.start()
-    return sched
 
+
+start_background()
 
 if __name__ == "__main__":
-    if db.latest_run() is None:
-        pipeline.run_cycle(force_retrain=True)   # primera vez: histórico + entrenamiento
-    else:
-        threading.Thread(target=pipeline.run_cycle, daemon=True).start()
-    start_scheduler()
-    app.run(debug=False, host="127.0.0.1", port=8050)
+    app.run(debug=False, host=config.HOST, port=config.PORT)
