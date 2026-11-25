@@ -1,0 +1,9 @@
+dash>=2.17
+plotly>=5.20
+pandas>=2.1
+numpy>=1.26
+scikit-learn>=1.4
+requests>=2.31
+apscheduler>=3.10
+holidays>=0.50
+joblib>=1.3
